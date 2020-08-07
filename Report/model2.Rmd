@@ -1,0 +1,915 @@
+---
+title: "Report"
+author: "Leonard Philippossian David Pitteloud"
+date: "11/10/2019"
+output: 
+ rmdformats::readthedown:
+    css: custom.css
+    self_contained: true
+    toc_depth: 3
+bibliography: bibliography.bibtex
+---
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+
+library("caret")
+library("caTools")
+library("doParallel") 
+library("ggplot2")
+library("glmnet")
+library("Matrix")
+library("mlbench")
+library("MLeval")
+library("kableExtra")
+library("knitr")
+library("naivebayes")
+library("tidyverse")
+library("Rmisc")
+library("rpart")
+library("prediction")
+library("xgboost")
+```
+
+
+```{r,warning=FALSE,echo=FALSE,include=FALSE}
+
+load(file =  "df_final.Rda")
+
+```
+
+
+
+#Generals settings for all models  
+
+
+
+k-Fold Cross-Validation
+
+There are different way to perform a cross validation. Usually the database is splitted into a training and testing set. However in our case we decided to us the k-Fold Cross-Validation method.This approach is a bit different as in the cross validation. Here the database is split into k groups. The first group is considered to be the validation set and the rest is used as training. The process is the repeated k times and every time the validation set changes. Statistically speaking the k-fold is calculated as follow :$$CV_{k}=\frac{1}{k}\sum_{i = 1}^k MSE_{i}$$ [@James:2014:ISL:2517747, p.181]
+
+
+Formally, the choice of k is usually 5 or 10, but it is not a esthablished rule. Having a larger k enable to reduce the difference in size between valdiation and training set. As both sets are getting similar, the bias of the technique is decreasing [@Kuhn, p.70].
+
+
+We selected this approach because of the size of the dataset and the problem of variance resulting from a classical validation set method. The problem of variance may be illustrated as follow : if we split a dataset at random in two parts, results may be very different from a set to another and more especially with a dataset with only few observations. Another aspect of the k-fold is that it is conservative. Therefore we do not overestimate our accuracy.
+
+
+
+# ROC
+
+It is always interesting to draw proite curves. However to draw them, two main conditions should be fullfilled :
+* The proportion of positive and negative instances should be known. In our case we know that there is n% of positive and 1-n% of negative.
+* The cost and benefits are also an important features. Even if we do not have precise information about the cost-benefit matrix, we are aware that minimizing banding so positive is crucial.
+
+A common appraoch to deal with uncertain conditions is the Receiver Operating Characteristics, (ROC) graph.
+It is usually a two dimension plot where the x axis stand for false positive and true positive on the y axis. It is a good way to compare different models, especially in a business perspective [@Provost:2013:DSB:2564781, p.215]
+
+
+# Accuracy
+
+The accuracy is simple measure to calculate the model perfromance. The calculation is as followed : accuracy = Number of correct decisions made / Total number of decisions made.
+The error rate is the opposite of accuracy. To obtain we just have to substract the accuracy in percent to 1. 
+
+However the accuracy is not always the best way to measure model efficience, it may be a bit more complex. To overcome this problem, usually a confusion matrix should be built. The role of such a matrix is to differentiate decisions performed by the classifier. In a problem with a two class outcome like ours, there are two classes positive and negative. The matrix contains four categories:
+
+* True positive, correctly predicted positive values.
+* False positive, wrong positive prediction.
+* True negative, correctly predicted negative values.
+* False negative, wrong negative prediction.
+
+Errors of the classifier are coming from false positive and false negative [@Provost:2013:DSB:2564781, p.189]. From this observations, two measures of precision may be derivated :
+* Sensitivity is a measure of the proportion of positives correctly predicted, it is simply calculated as ratio of true positive and actual positive output.
+* Specificity is a measure of the proportion of negatives correctly predicted, the calculation is the same as above, true negative divided by the total amount of negative values.
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+#choose wich df to compute 
+
+df <- df_final
+
+
+#to make computation faster 
+
+cl<-makeCluster(detectCores()) # detect and create a cluster
+registerDoParallel(cl) # register it
+
+#Pre-Compute CV folds so we can use the same ones for all models 
+ 
+ set.seed(123)
+ 
+ seeds <- vector(mode = "list", length = 51)
+ for(i in 1:50) seeds[[i]] <- sample.int(1000, 22)
+ 
+ ## For the last model:
+ seeds[[51]] <- sample.int(1000, 1)
+ 
+ 
+ 
+ fitControl <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 10,
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds
+ )
+ 
+ 
+ #preprocess 
+ 
+ prePro <- c("center", "scale","YeoJohnson")
+ 
+```
+ 
+
+ 
+ #Models 
+
+
+```{r,warning=FALSE,echo=FALSE,include=FALSE}
+load(file =  "knn_fit.Rda")
+load(file =  "lasso_logreg_fit.Rda")
+load(file =  "Fit_naive_bayes.Rda")
+load(file =  "fit_cart.Rda")
+load(file =  "fit_rf.Rda")
+load(file =  "boosting_model.Rda")
+load(file =  "Fit_nnet.Rda")
+load(file =  "L_model.Rda")
+load(file =  "P_model.Rda")
+load(file =  "R_model.Rda")
+load(file =  "fit_bag.Rda")
+
+```
+
+
+ ##KNN
+
+K-nearest neighbors is one of the simplest classification technique in machine learning. It implies assigning to each new vector the same label as the closest example from the training set.The similarity is often mesured thanks to euclidean distance. This model is fast to train but slow at making prediction [@Bishop:2006:PRM:1162264, p.291]
+
+In other word, a knn can be used when there is little or no prior knowledge about the distribution of the data. The k in knn in the number of neighbors that the algorithm will use, it should be normally a odd number to avoid equality in the vote. It is measuring distance of defined features between observations or neighbors and the shortest distance will define from what the classe of the unknown observation. The knn will then take in account the k observations around the unknown value.
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+#tuneGrid_knn = expand.grid(k = c(1,3,5,7,15,20))
+#
+#
+#knn_fit <- train(
+#  band_type ~ .,
+#  data = df,
+#  method = "knn",
+#  preProcess = prePro,
+#  trControl = fitControl,
+#  tuneGrid = tuneGrid_knn
+#)
+
+
+plot(knn_fit)
+
+best_knn_model <-
+  knn_fit$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_knn_model_formated <-  knn_fit$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "knn") %>% select(model, ROC:Spec)
+
+
+```
+We can see here that the best number of neighbors is around k=5 where we reach a ROC-AUC of 0.76. 
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_knn_model, caption = "Best KNN models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The table shows a different picture. We could argue here that k=1 is also a pretty good candidate because the sensivity is 30% higher with almost the same specificity. 
+
+
+
+ ## Lasso Logistic Regression 
+
+Logistic regression is a linear model that enable to solve two-class classification problem. From a purely statistical perspective, logistic regression should be more considered as a classification model rather than a regression. Mathematically speaking, under general assumptions, the probability of one to the binary outcome could be explicited as a logistic sigmoid implemented on a classic linear function whith the vector $$\phi$$ : $$p(C_{1}|\phi)=y(\phi)=\sigma(w^T\phi)$$ [@Bishop:2006:PRM:1162264, p.205].
+
+In simple words, the logistic regression is a binary classifier that enable to classify observations, regarding their dependent variables, by drawing a linear function.
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+tunegrid_lasso_logreg <-
+  expand.grid(
+    alpha = c(0.1, 0.55, 1,1.5,2),
+    lambda = c(0.0002, 0.002, 0.02)
+  )
+
+
+##choose wich df to compute 
+#lasso_logreg_fit <-
+#  train(
+#    band_type ~ .,
+#    data = df,
+#    method = 'glmnet',
+#    trControl = fitControl,
+#    tuneGrid = tunegrid_lasso_logreg
+#)
+
+
+plot(lasso_logreg_fit)
+
+best_lasso_logreg_model <-
+  lasso_logreg_fit$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_lasso_logreg_formated <-  lasso_logreg_fit$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "log_Reg") %>% select(model, ROC:Spec)
+
+
+```
+Here we can see that a lambda of 0.002 is the best which mean a small constraint should be added to find $$\beta_i$$ and that there is some autocorrelations amonst variables (but not too much). 
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_lasso_logreg_model, caption = "Logistic Regression model result")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+
+```
+For the lasso logistic regression we find a ROC of 0.79 with a sensitivity of 0.6. 
+
+
+
+ ##Bayesian Model
+
+
+The objective of naives bayes is to estimate the likelihood of a certain outcome. To do so, we first need to calculate the probability of each of our outcome (peut être effectivement le dire). The calculation of the probability of an event to occur is as follow : posterior probability which reprensents the degree to which we believe a g given model accurately describes the situation is equal to the likelihood which describes how well the model predicts the data multiplied by the prior probability which describes the degree to which we belive the model accurately describes reality based on all of our prior information. That multiplication is then divided by normalizing constant that makes the posterior density
+integrate to one. The main advantages is that naives bayes perform better than other models that may assume independance.
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+ set.seed(123)
+ 
+ seeds <- vector(mode = "list", length = 51)
+ for(i in 1:50) seeds[[i]] <- sample.int(1000, 28)
+ 
+ ## For the last model:
+ seeds[[51]] <- sample.int(1000, 1)
+ 
+ 
+ 
+ fitControl_bay <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 10,
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds
+ )
+ 
+
+
+
+
+#naive bayes 
+
+tunegrid_naive_bayes <-
+  expand.grid(
+    laplace = c(0, 0.1, 1),
+    adjust = c(0, 0.1, 1, 2, 3),
+    usekernel = c(1)
+  )
+
+#Fit_naive_bayes <- train(
+#  band_type ~ .,
+#  data = df,
+#  method = 'naive_bayes',
+#  trControl = fitControl_bay,
+#  tuneGrid = tunegrid_naive_bayes,
+#  seed = 10,
+#  verbose = FALSE
+#)
+
+
+
+best_naive_bayes_model <-
+  Fit_naive_bayes$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE))
+
+best_naive_bayes_formated <-  Fit_naive_bayes$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "naive bayes") %>% select(model, ROC:Spec) 
+best_naive_bayes_formated<- best_naive_bayes_formated[1:2,]
+
+kable(best_naive_bayes_model[1:2,], caption = "Best naive bayes models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best naive bayes model has a ROC of `r max(best_naive_bayes_model$ROC)`. But unfortunately the sensivity is low so naive bayes is not a good candidate for our datas. 
+
+
+ ## Tree-based methods
+
+These methods consist in splitting predictors into different regions. They are recosigned for their ease to be interpreted. From a performance perspective, classical trees are struggling to compete with supervised learning methods. Classical trees models are also subject to instability because the tree shape depend of the starting point. So different starting point will lead to different tree(find local maxima: greedy algorithm). 
+However some ameliorated tree-based methods, involving the generation of multiple trees are able to compete in terms of accuracy. 
+
+
+
+ ### CART 
+
+In this exercice, we are predicting a qualitative output. Therefore, classification tree is preferred over the regression tree. 
+In a classification tree a prediction is made that each observation belongs to the most commonly occuring class of training observation, in the region it belongs [@James:2014:ISL:2517747, p.311].
+
+Classification trees have the advantage to be easily leasible and to provide a graphical interpretation. The complexity parameter is used to control the size of the decision tree and to select the optimal tree size.
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+
+tuneGrid_cart = expand.grid(cp = c(0,0.05,0.1,0.2,0.3,0.5))
+
+
+#fit_cart <- train(
+#  band_type ~ .,
+#  data = df,
+#  method = "rpart",
+#  trControl = fitControl,
+#  tuneGrid=tuneGrid_cart,
+#  tuneLength = 10
+#)
+
+plot(fit_cart)
+best_cart_model <-
+  fit_cart$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_cart_formated <-  fit_cart$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "CART") %>% select(model, ROC:Spec) 
+
+
+```
+Here we see that the lowest the complexity parameter, the better. We can suppose its because there is a lot of variables with complexe interactions. 
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+rpart.plot::rpart.plot(fit_cart$finalModel)
+
+```
+Here we can observe the decision tree. The most decisive variable seem to be the factor press_type=woodhoe70. Press_Speed and humidity seem also very important. 
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+kable(best_cart_model, caption = "Best CART models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+The best calssification tree model has an accuracy of `r best_cart_model$ROC` with a cost of `r best_cart_model$cp`. 
+
+We have talked about limits in a performance perspective with classical tree based methods. A solution to make them more efficient is to aggregate many decision trees together to provide a more efficient predictive method. Those aggregated trees may be categorized in three different categories, bagging, random forest and boosting. 
+
+
+ ### Bagging 
+
+Bagging is a method that combine **B**oostrap and **agg**regation
+In classification problems, the class predicted by each of the aggregated trees that we may call **B** trees is then weighted and the one that is the most appearing in the predictions is chosen. 
+Bagging is an effective procedure to make more robust unstable classifiers. Bagging has an effect of reducing the variance by averaging a set of observations. Theorically it is more useful when used in very large datasets [@Büchlmann, p.927]
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+#fit_bag <- train(band_type ~ ., data = df, 
+#                 method = "AdaBag", 
+#                 trControl=fitControl,
+#                 tuneSearch=3,
+#                 seed = 10,
+#                 preProcess = c("YeoJohnson","center", "scale"),
+#                 verbose = FALSE)
+
+
+
+plot(fit_bag)
+
+
+
+
+best_bag_model <-
+  fit_bag$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+
+best_bagging_formated <-  fit_bag$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Bagging") %>% select(model, ROC:Spec) 
+
+
+```
+We can see here that after 100 tress there is no increase of ROCAUC and that the best depth is 3. We could emit the hypothesis it is because there are some meaningful interactions between variables. 
+
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_bag_model, caption = "Best random forest models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+We can see that the best bagging model have a ROC of `r max(best_bag_model$ROC)`. Unfortunately the sensivity is low with a score of 0.3 which mean is not a suitable model for our problem. 
+
+
+
+ ### Random Forest  
+
+Random Forest may be considered as an improved version of bagged trees as it reduces correlation between each of the aggregated trees. The principle is relatively similar to bagging. Several trees are built on a bootstraped training sample. However during the process of creating trees and at split in each tree, the random forest will not be able
+to consider available predictors and therefore that reduces correlation within trees 
+For example if there is a very strong predictor in the model, bagged trees will only consider this particular strong variable at the top split. It means that all the aggregated trees will have a similar look and will result in correlated aggregated trees. Random Forest is dealing with this issue by forcing each split to consider only a subset of predictor [@James:2014:ISL:2517747, p.319].
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+tunegrid_rf <- expand.grid(.mtry=c(1,2,3,4,5,8,9,10,11,15,20))
+#
+#fit_rf <- train(band_type ~ ., data = df, 
+#                 method = "rf", 
+#                 trControl=fitControl,
+#                 tuneGrid=tunegrid_rf,
+#                 seed = 10,
+#                 preProcess = c("YeoJohnson","center", "scale"),
+#                 verbose = FALSE)
+
+
+
+plot(fit_rf)
+
+best_rf_model <-
+  fit_rf$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_rf_formated <-  fit_rf$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Random Forest") %>% select(model, ROC:Spec) 
+
+
+```
+We can see that the best number of randomly selected predictors at each split is 8 and then it decrease slowly. 
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_rf_model, caption = "Best random forest models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best random forest model has an ROC of `r max(best_rf_model$ROC)` with a mtry of `r best_rf_model %>% filter(ROC ==max(ROC, na.rm = TRUE)) %>%select(mtry)` but its mainly boosted by high specificity and a sensitivity that stay around 0.6. 
+
+ ### Boosting
+
+Once again we go back to the roots and to trees aggregation which was explained in the bagging. However, the difference stands in the way trees are built. In the case of boosting each tree is grown in a sequential manner. That means that every new tree is built in a way that takes in account information of previous built trees. 
+The idea of boosting is to create small trees and to learn step by step.The smaller the trees are, the more precise the model will be. However models will be learning very slowly if trees are to small [@James:2014:ISL:2517747, p.322].
+
+```{r,warning=FALSE, echo=FALSE}
+       
+set.seed(123)
+ 
+ seeds <- vector(mode = "list", length = 51)
+ for(i in 1:50) seeds[[i]] <- sample.int(1000, 36)
+ 
+ ## For the last model:
+ seeds[[51]] <- sample.int(1000, 1)
+ 
+ 
+ 
+ fitControl_boos <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 5, #less repeat due to computation time and bug 
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds
+ )
+ 
+#
+#boosting_model <- train(
+#  band_type ~ .,
+#  data = df,
+#  method = 'xgbTree',
+#  trControl = fitControl_boos,
+#  seed = 10,
+#  tuneLength=3
+#)
+
+
+best_boosting_model <-
+  boosting_model$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_boosting_formated <-  boosting_model$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Boosting") %>% select(model, ROC:Spec) 
+
+
+plot(boosting_model)
+
+
+```
+We can clearly see that the best depth is equal to 3. This is maybe because there many hidden interactions between variables. 
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_boosting_model, caption = "Best Boostig models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best boosting model has an ROC of `r max(best_boosting_model$ROC)`. 
+
+
+## Neural network
+
+Neural network algorithms are inspired by the human brain structure. Basically data are entering a neural network, train themselves, and then predict the output for a new dataset with similar data. 
+Neural networks are formed by several layers of neurons. First there is the input layer that receive information, and at the end there is the output layer that will determine the output. Between this two layers, there are hidden layers.
+All the neurons are connected to neurons of the next layer by channel, which are assigned a numerical value know as weight. When they are entering the networks, inputs are multiplied to the corresponding weight. In the hidden layer each of the neuron has a numerical value, which is a bias. This value is added to the inputed sum. Then this value is passed through what we call the activation function. The result of the calculation will then decide if the neuron will be activated or not. This method is called forward propagation. For the final output it is a calculation of probability, what pattern is the most likely to occur. 
+If the output is wrong, the neural network will itself adjust its weight to be more efficient. Those iteration, backward and forward  will reinforce the strength of the model, even if it may take some time. 
+
+```{r,warning=FALSE, echo=FALSE}
+
+set.seed(123)
+ 
+seeds <- vector(mode = "list", length = 51)
+for(i in 1:50) seeds[[i]] <- sample.int(1000, 64)
+ 
+## For the last model:
+seeds[[51]] <- sample.int(1000, 1)
+ 
+ 
+ 
+ fitControl_nnet <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 10,  
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds
+ )
+ 
+ 
+tunegrid_nnet <- expand.grid(size = c(1,2,3,4,5,8,10,15), decay = c(0, 0.1,0.2,0.3,0.4,0.5,0.6))
+
+#
+#Fit_nnet <- train(band_type ~ ., data = df, 
+#                 method = "nnet", 
+#                 trControl = fitControl_nnet,
+#                 tuneGrid=tunegrid_nnet, 
+#                 seed= 10,
+#                 verbose = FALSE)
+
+
+
+best_nnet_model <-
+  Fit_nnet$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_nnet_formated <-  Fit_nnet$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Neural Network") %>% select(model, ROC:Spec) 
+
+
+plot(Fit_nnet)
+```
+Here we can see that best models are produced with few hidden units and a weight decay of 0.2. 
+
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_nnet_model, caption = "Best neural network models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+The best neural net model has a ROC of `r max(best_nnet_model$ROC)` with a size of `r best_nnet_model %>% filter(ROC ==max(ROC, na.rm = TRUE)) %>%select(size)` and a decay of `r best_nnet_model %>% filter(ROC ==max(ROC, na.rm = TRUE)) %>%select(decay)`. 
+
+
+
+
+ ##SVM
+
+The support vector machine or commonly called (SVM) is popular for solving classification problems as in our case. One of the key property of this model is that parameters of the model are relative to a convex optimization model and therefore any local solution may be a global optimum. Support vector machine is a tool that help taking decisions but it is not giving posterior probabilities [@Bishop:2006:PRM:1162264, p.326].
+
+More commonly, SVM may be used to do binary classification. In a such procedure, the SVM finds a hyper-plane (line in 2d, plane in 3d, etc) that separates its training data in such a way that the distance between the hyper plane and the closest points from each class is maximized. Once a hyper-plane is defined new data points are classified in each side of the hyper-plane. 
+
+The main advantage of SVM is that they may be used even if there a very few data, a bit like in our case. Usually when applying models on small data set the risk of overfitting is very high. However SVM only use a small part of data points to create the hyper-plane, and does not really take in account if the dataset is large. The smaller the dataset is, the more accuracy we will lose. As said previously, the support vector machine will tell us in which hyper-plane will an observation will end, but unfortunately not the probability of an observation to fall in a certain hyper-plane.
+
+
+ ### SVM linear 
+
+Theorically SVM can only be used when data are linearly separable, and the calculation explained above is performed. 
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+tunegrid_L_model <- expand.grid(.C=c(0.01,0.1,0.5,1,2,3))
+#
+#L_model <- train(band_type ~ ., 
+#                 data = df ,
+#                 method="svmLinear",
+#                 tuneGrid = tunegrid_L_model,
+#                 trControl=fitControl, 
+#                 seed = 10)
+#
+
+best_L_model <-
+  L_model$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+
+best_LSVM_formated <-  L_model$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Linear SVM") %>% select(model, ROC:Spec) 
+
+
+plot(L_model)
+```
+We can see that the best linear SVM model is with a cost of 2. And it reach a pretty high ROCAUC of more than 0.8.
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_L_model, caption = "Best Linear SVM models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best SVM linear model has a ROC of `r best_L_model$ROC` with a cost of `r best_L_model$C`. 
+
+
+ ### SVM Polynomial 
+
+However it is possible to make data lineraly separable even if it was not the case at the begining. The solution stand into the dimension of the hyper-plane. If we are able to higher the dimension of the plane, we will be able to make this linera separation. This method is however complex from a compuational aspect. The mapping is proceeded through the use of kernels. By a combination of these kernels and a modification of parameters, it is very likely to obtain better result.
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+#Fit a Poly SVM
+
+set.seed(123)
+ 
+ seeds <- vector(mode = "list", length = 31)
+ for(i in 1:30) seeds[[i]] <- sample.int(1000, 72)
+ 
+ ## For the last model:
+ seeds[[31]] <- sample.int(1000, 1)
+ 
+ 
+ 
+fitControl_p <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 6, #To avoid too long computational time and bug 
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds)
+
+tunegrid_P_model <- expand.grid(C=c(0.1,0.5,1,2), degree = c(1,2,3), scale =c(0.001,0.01,0.1,1,2,3))
+
+
+#P_model <- train(band_type ~ ., 
+#                             data = df, 
+#                             method="svmPoly",
+#                             tuneGrid = tunegrid_P_model,
+#                             trControl=fitControl_p,
+#                             seed = 10)
+
+
+
+plot(P_model)
+best_p_model <-
+  P_model$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+
+best_PSVM_formated <-  P_model$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Polynomial SVM") %>% select(model, ROC:Spec) 
+
+
+
+
+```
+Here we can clearly see that the best degree is degree 1 which mean that vectors are linears. Cost doesnt seem to matter much at scale 2-3 and degree 1 (where the best fit is). 
+
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+
+kable(best_p_model, caption = "Best poly SVM models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best SVM polynomial model has an accuracy of `r max(best_p_model$ROC)`.
+
+ ### Radial SVM
+
+In the radial SVM, the radial basis function kernel, or RBF kernel is used to map the new hyper plane.
+
+```{r,warning=FALSE, echo=FALSE}
+
+set.seed(123)
+
+seeds <- vector(mode = "list", length = 51)
+ for(i in 1:50) seeds[[i]] <- sample.int(1000, 45)
+ 
+ ## For the last model:
+ seeds[[51]] <- sample.int(1000, 1)
+ 
+ 
+ 
+fitControl_R <- trainControl(method = "repeatedcv",
+                            number = 5,
+                            repeats = 10,  
+                            savePredictions = TRUE,
+                            classProbs = TRUE,
+                            summaryFunction = twoClassSummary,
+                            seeds= seeds)
+#Fit a Radial SVM
+
+tunegrid_R_model <-
+  expand.grid(C = c(0.1, 0.25, 0.5, 1, 2),
+              sigma = c(0,0.001, 0.01, 0.05, 0.1, 0.5, 1, 2,3))
+#
+#R_model <- train(
+#  band_type ~ .,
+#  data = df,
+#  tuneGrid = tunegrid_R_model,
+#  method = "svmRadial",
+#  trControl = fitControl_R,
+#  seed = 10
+#)
+
+best_R_model <-
+  R_model$results %>% filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) 
+
+best_RSVM_formated <-  R_model$results %>% 
+  filter(Sens == max(Sens, na.rm = TRUE)| ROC == max(ROC, na.rm = TRUE)) %>% mutate(model = "Radial SVM") %>% select(model, ROC:Spec) 
+
+
+plot(R_model)
+
+```
+We can see that lower is the value of sigma the better is the model. This means that the radial model can easily overfit with those datas thus it scores better when vectors are linear or close to linear (which it is when sigma is low). A cost of 1-2 seems to be the best here. 
+
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+kable(best_R_model, caption = "Best Radial SVM models using ROC and Sensitivity metrics")%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+The best SVM radial model has an ROC of `r max(best_R_model$ROC)`. 
+
+
+To conclude the svm chapter it seem that the radial model is doing a lot less good than the linear and polynomial model. From those results, we can suggest the hypothesis that svm models fit better on those datas with linears vectors. 
+
+#All models comparaison 
+
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+resamps <- resamples(list(KNN = knn_fit,
+                          LassoLogReg = lasso_logreg_fit,
+                          Deccision_Tree = fit_cart,
+                          Naive_bayes=Fit_naive_bayes,
+                          Random_forest=fit_rf,
+                          Neural_net=Fit_nnet,
+                          SVM_linear=L_model,
+                          SVM_radial=R_model,
+                          Bagging=fit_bag
+                          ))
+resamps
+bwplot(resamps, layout = c(3, 1))
+```
+
+
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE, include= FALSE}
+
+#choose wich df to compute 
+
+ROC_plot <- evalm(list(knn_fit,lasso_logreg_fit,fit_cart,fit_rf,Fit_nnet,L_model,P_model,R_model,boosting_model, fit_bag),gnames=c("KNN","Lasso Logistic Regression",'CART','Random Forest','Neural network', 'Linear SVM', 'Poly SVM','Radial SVM','Boosting',"Bagging"),rlinethick=0.6,fsize=8,plots='r')
+
+
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+#choose wich df to compute 
+
+ROC_plot$roc
+
+
+```
+
+From this graph when we compare all models two are clearly outperforming others: **Random Forest** and **Boosting**, the worst model is **Radial SVM** by far. The Random Forest has a slightly better AUC (Area Under Curve) than the Boosting model. If it's important to have a low false positive rate (high specificity) Boosting is better. For our case we are more interested by having a high sensivity (detecting band_type=band accurately) thus we will prefer a random forest model for prediction. To asses which trade-off should be done (defining the cutting point) we would need more information about cost for the printer for each case (cost of false positive versus cost of false negative). 
+
+
+Now we would like to know which variables has a lot of importance to determine wether or not there is banding or not. We will use the random forest result to explore that further. 
+
+```{r,warning=FALSE, echo=FALSE}
+
+Imp <- varImp(fit_rf)
+
+Imp <- Imp$importance %>% tibble::rownames_to_column("Variable") %>%  arrange(desc(Overall))
+
+
+kable(Imp, caption = "Most important variables to predict band_type")%>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(width = "100%", height = "500px")
+
+```
+So from this table we can see that **press_speed**, **viscosity**, **ink_temperature**, **solvent_pct** and **humidity** are really important. For factors **press_type = woodhoe70**, **cylinder_n = og**, **press = 815**, **unit_number = 7** and **ink_type = uncoated** seem pretty important. So we will plot those variables to have a better understanding of the underline relation. 
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+best_var_continuous <- df %>% select("press_speed", "viscosity","ink_temperature","solvent_pct","humidity","band_type")
+
+
+plot_density_fun <- function(input.col, data = best_var_continuous){ 
+  p <- ggplot(data, aes(x = best_var_continuous[,input.col]))+
+  geom_density(aes(color = band_type, fill = band_type), alpha = 0.4, show.legend = TRUE) +
+  scale_color_manual(values = c("#868686FF", "#EFC000FF"))+
+  scale_fill_manual(values = c("#868686FF", "#EFC000FF"))+
+  xlab(paste(colnames(best_var_continuous)[input.col]))+
+  theme_classic()
+return(p)
+}
+
+all.density.plot <- lapply(c(1:5), plot_density_fun)
+
+Rmisc::multiplot(plotlist = all.density.plot, cols = 2)
+```
+Here we can see some intersting behaviors. First it seems that faster is the press the less it is likely to band, thus the recommended speed would be higher than 60. For the solvent_pct, levels lower than 40 seem more prone to band, thus we would recommand to avoid such levels. For the viscosity it is levels higher than 25 that are more prone to band. The humidity variable is harder to distinguish but surely very low levels are bad (maybe there are interaction with others variables that make this variable more significiant). For the ink temperature it seems that either too low or too high level are prone to band, thus we would recommend to keep it around 45. 
+
+
+```{r, echo = FALSE, warning=FALSE}
+
+best_Factor <- list()
+
+best_Factor[[1]] <-  df %>% filter(press_type == "woodhoe70") %>% select(press_type_woodhoe70="press_type", "band_type") %>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(), press_type_woodhoe70="press_type")
+
+best_Factor[[2]] <- df %>% filter(cylinder_no == "g") %>% select(cylinder_no_g="cylinder_no", "band_type")%>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(),cylinder_no_g="cylinder_no" )
+
+best_Factor[[3]] <- df %>% filter(press == "815") %>% select(press_815= "press", "band_type")%>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(), press_815= "press" )
+
+best_Factor[[4]] <- df %>% filter(unit_number == "7") %>% select(unit_number_7= "unit_number", "band_type")%>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(), unit_number_7= "unit_number")
+
+best_Factor[[5]] <- df %>% filter(cylinder_type == "yes") %>% select(cylinder_type_yes= "cylinder_type", "band_type")%>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(), cylinder_type_yes= "cylinder_type")
+
+best_Factor[[6]] <- df %>% filter(ink_type == "uncoated") %>% select(ink_type_uncoated= "ink_type", "band_type")%>% group_by(band_type) %>% dplyr::summarize(n=dplyr::n(), ink_type_uncoated= "ink_type")
+
+
+
+plot_bar_fun <- function(data){ 
+  p <- ggplot(data, aes(x = band_type, y= n, color=band_type, fill = band_type))+
+  geom_bar( stat="identity" , alpha = 0.6, show.legend = FALSE) +
+  scale_fill_manual(values = c("#868686FF", "#EFC000FF"))+
+  scale_color_manual(values = c("#868686FF", "#EFC000FF"))+
+  xlab(paste(colnames(data)[3]))+
+  theme(legend.position = "none")+
+  theme_classic()
+return(p)
+}
+
+all.density.plot <- lapply(best_Factor, plot_bar_fun)
+
+Rmisc::multiplot(plotlist = all.density.plot, cols = 2)
+
+
+```
+For factors we can also find some intersting informations. **Press_type = woodhoe70** was ranked the factor that has to most impact on prediction which seem strange from those graph because **cylinder_type = yes** seems to be a lot more important. Maybe that is due to multicollinearity and interaction between variables that we can't see here. In any case we can only recommend to avoid to have a cylinder_type = yes. For us, as stastiticiens, It's difficult to interpret more the meaning of those datas but we hope that with a better understanding of rotogravure those results make sense and could help to reduce the percentage of banding. 
+
+
+ # Conclusion 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# References
+@Büchlmann
+@Bishop:2006:PRM:1162264
+@Kuhn
+@James:2014:ISL:2517747
+@Provost:2013:DSB:2564781

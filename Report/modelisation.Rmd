@@ -1,0 +1,366 @@
+---
+title: "Report"
+author: "Leonard Philippossian David Pitteloud"
+date: "11/10/2019"
+output: 
+ rmdformats::readthedown:
+    css: custom.css
+    self_contained: true
+    toc_depth: 3
+bibliography: bibliography.bibtex
+---
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+
+#library("bartMachine")
+library("caret")
+library("caTools")
+library("doParallel") # use the parallel backend
+library("naivebayes")
+#library("rJava")
+library("stringi")
+library("prediction")
+```
+
+
+
+```{r,warning=FALSE,echo=FALSE,include=FALSE}
+load(file =  "full_df_knnimput.Rda")
+load(file =  "boruta_df_knnimput.Rda")
+load(file =  "lvq_df_knnimput.Rda")
+
+```
+
+
+
+
+
+
+```{r}
+#choose wich df to compute 
+
+df <- full_df_knnimput
+
+#to make computation faster 
+
+cl<-makeCluster(detectCores()) # detect and create a cluster
+registerDoParallel(cl) # register it
+
+#Pre-Compute CV folds so we can use the same ones for all models
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+
+
+```
+
+```{r}
+
+model <- list("full_df_knnimput"= full_df_knnimput, "boruta_df_knnimput" = boruta_df_knnimput)
+
+
+
+tunegrid_rf <- expand.grid(.mtry=c(30,40))
+result_df <- tibble(data_imp = as.character(), prePro = as.character(), accuracy = as.numeric())
+
+
+for(i in 1:length(model)){
+
+mod <- model[[1]]
+
+for(j in 1:length(preProcess)){
+
+Prepro <- preProcess[1:j]
+  
+fit <- train(band_type ~ ., data = mod, 
+                 method = "rf", 
+                 trControl=fitControl,
+                 tuneGrid=tunegrid_rf,
+                 seed = 10,
+                 preProcess = Prepro,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+
+result_df <- rbind(result_df, tibble(data_imp = names(model)[i], prePro = stri_paste(preProcess[1:j], collapse=''), accuracy = max(fit$results$Accuracy)))
+
+}
+
+}
+  
+
+
+
+
+```
+
+```{r}
+#Random forest 
+
+df <-df_knnimput[,-c(6,8,11)]
+
+tunegrid_rf <- expand.grid(.mtry=c(10,20,30,40))
+
+rf <- train(band_type ~ ., data = completedData, 
+                 method = "rf", 
+                 trControl=fitControl,
+                 tuneGrid=tunegrid_rf,
+                 seed = 10,
+                 preProcess = c("YeoJohnson","center", "scale"),
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+
+
+prediction(rf)
+max(rf$results$Accuracy)
+a <- varImp(rf)
+a$importance
+#print(rf)
+
+varImp(rf)
+
+plot(rf)
+
+predict(rf, newdata = completedData)
+
+cm = table(completedData[,39], predict(rf, newdata = completedData)) 
+
+accuracy <- (cm[1,1]+cm[2,2])/(sum(cm))
+
+accuracy
+
+
+
+
+# Weighted Subspace Random Forest (maybe interesting when a lot of variables)
+
+tunegrid_wsrf <- expand.grid(.mtry=c(1,3,5,7,8,9,10,15,20,30,40))
+
+wsrf <- train(band_type ~ ., data = completedData, 
+                 method = "wsrf", 
+                 trControl = fitControl,
+                 tuneGrid=tunegrid_wsrf,
+                 seed= 10,
+                 verbose = FALSE)
+
+cm = table(testing[,7], predict(wsrf, newdata = testing)) 
+
+accuracy <- (cm[1,1]+cm[2,2])/(sum(cm))
+
+accuracy
+
+```
+
+```{r}
+
+
+#svm 
+
+
+#Fit a Linear SVM
+
+tunegrid_L_model <- expand.grid(.C=c(0.01,0.1,0.5,1,2,3,4))
+
+L_model <- train(band_type ~ ., 
+                 data = training ,
+                 method="svmLinear",
+                 tuneGrid = tunegrid_L_model,
+                 trControl=fitControl, 
+                 seed = 10)
+
+#Fit a Poly SVM
+
+P_model_model <- expand.grid(C=c(0.1,0.5,1,2), degree = c(1,2,3), scale =c(0.001,0.01,0.1,1,10))
+
+P_model <- train(band_type ~ ., 
+                             data = training, 
+                             method="svmPoly",
+                             tuneGrid = tunegrid_P_model,
+                             trControl=fitControl,
+                             seed = 10)
+
+            
+#Fit a Radial SVM
+
+R_model_model <- expand.grid(C=c(0.1,0.25,0.5,1,2), sigma =c(0.001,0.01,0.05,0.1,0.5,1,10))
+
+R_model <- train(band_type ~ ., 
+                 data = training, 
+                 tuneGrid = R_model_model,
+                 method="svmRadial",
+                 trControl=fitControl)
+
+
+
+#Compare 3 models:
+resamps <- resamples(list(Linear = rf, nnt= Fit_nnet))
+summary(resamps)
+bwplot(resamps, metric = "Accuracy")
+densityplot(resamps, metric = "Accuracy")
+
+#Test a model's predictive accuracy Using Area under the ROC curve
+#Ideally, this should be done with a SEPERATE test set
+cm = table(testing[,7], predict(L_model, newdata = testing)) 
+
+accuracy <- (cm[1,1]+cm[2,2])/(sum(cm))
+
+accuracy
+
+```
+
+```{r}
+#nnet 
+
+
+
+tunegrid_nnet <- expand.grid(size = c(1,2,3,4,5,8,10,15,20), decay = c(0, 0.1,0.2,0.3,0.4,0.5,0.6,0.7))
+
+
+Fit_nnet <- train(band_type ~ ., data = df, 
+                 method = "nnet", 
+                 trControl = fitControl,
+                 tuneGrid=tunegrid_nnet, 
+                 seed= 10,
+                 verbose = FALSE)
+
+
+
+cm = table(testing[,7], predict(Fit_nnet, newdata = testing)) 
+
+accuracy <- (cm[1,1]+cm[2,2])/(sum(cm))
+
+accuracy
+
+
+
+```
+
+
+```{r}
+
+#Bayesian Model
+
+
+
+#
+#tunegrid_nnet <- expand.grid(size = c(1,2,3,4,5,8,10,15,20,30,40,50), decay = c(0, 0.1,0.2,0.3,0.4,0.5,0.6,0.7))
+#
+#
+#Fit_nnet <- train(band_type ~ ., data = training, 
+#                 method = "bartMachine", 
+#                 trControl = fitControl,
+#                 seed= 10,
+#                 verbose = FALSE)
+
+
+
+#naive bayes 
+
+tunegrid_naive_bayes <- expand.grid(laplace = c(0, 0.1,0.2,1,3), adjust = c(0, 0.1,1,2,3,4,5), usekernel = c(0,1))
+
+Fit_naive_bayes <- train(band_type ~ ., data = training, 
+                 method = 'naive_bayes', 
+                 trControl = fitControl,
+                 tuneGrid=tunegrid_naive_bayes,
+                 seed= 10,
+                 verbose = FALSE)
+
+
+cm = table(testing[,7], predict(Fit_naive_bayes, newdata = testing)) 
+
+accuracy <- (cm[1,1]+cm[2,2])/(sum(cm))
+
+accuracy
+
+
+```
+
+
+
+
+```{r}
+
+fun_model <- function(x, cont_meth = "repeatedcv", model = "rf" ){
+  
+  
+  inTraining <- createDataPartition(x$band_type, p = .75, list = FALSE)
+  training <- df[ inTraining,]
+  testing  <- df[-inTraining,]
+  
+  fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+ 
+  rf_grid <- expand.grid(mtry = c(1, 2, 3,5,7,10))
+  
+  Fit <- train(band_type ~ ., data = training, 
+                 method = "nnet", 
+                 trControl = fitControl)
+                 ## This last option is actually one
+                 ## for gbm() that passes through)
+
+  return(Fit$finalModel)
+}
+
+
+fun_model(df)
+
+
+net.sqrt <- neuralnet(band_type ~ ., training, hidden=10, threshold=0.01)
+print(net.sqrt)
+```
+
+
+
+```{r}
+
+#proof of concept prediction svm
+
+
+set.seed(101) 
+sample <- sample.int(n = nrow(df), size = floor(.75*nrow(df)), replace = F)
+train <- train[,-c(1:23,41)]
+test  <- test[,-c(1:23,41)]
+
+
+
+model.train <- svm(band_type~. , data = train,  kernel = "radial", cost = 10 , gamma = 0.01)
+
+summary(model.train)
+
+y.pred <- predict(model.train, test)
+
+y.pred<-data.frame(y.pred)
+row.names(y.pred)
+cm = table(test[row.names(y.pred), 18], predict(model.train, est)) #
+
+```
+
+
+```{r}
+#build the classification tree
+classification_tree <- rpart(formula = band_type~., 
+                             data = training,
+                             method="class")
+
+#evaluation of the model
+class_prediction <- predict(object = classification_tree,
+                            newdata = testing,
+                            type = "class")
+confusionMatrix(data = class_prediction,
+                reference = testing$band_type)
+
+
+
+```
+
+```{r}
+
+
+```
