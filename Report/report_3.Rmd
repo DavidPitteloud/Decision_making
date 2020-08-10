@@ -64,8 +64,9 @@ Moreover, to understand our data, it is fundamental to explore them and to visua
 
 
 ```{r, include= FALSE, echo = FALSE, warning=FALSE}
+
 #import the database
-bands3 <- read_delim("bands3.csv", 
+bands3 <- read_delim("C:/Users/Admin/Documents/Decision_making/Data/bands3.csv", 
     ";", escape_double = FALSE, trim_ws = TRUE)
 #create data frame
 
@@ -535,7 +536,7 @@ From the Learning Vector Quantization variable selection, we could delete variab
 
 Boruta is an algorithm, with an iterative construction, based on random forest, which helps us to achieve a data selection. The main advantage of Boruta is that it is providing an unbiased and stable selection of important and non-important attributes [@RePEc:jss:jstsof:v:036:i11, p . 3]. 
 
-```{r, warning=FALSE, echo=FALSE, message=FALSE, include= FALSE}
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
 
 # to ensure reproducibility
 set.seed(10)
@@ -655,18 +656,19 @@ registerDoParallel(cl) # register it
 
 
 ```{r,warning=FALSE,echo=FALSE,include=FALSE}
-load(file =  "knn_fit.Rda")
-load(file =  "lasso_logreg_fit.Rda")
-load(file =  "Fit_naive_bayes.Rda")
-load(file =  "fit_cart.Rda")
-load(file =  "fit_rf.Rda")
-load(file =  "boosting_model.Rda")
-load(file =  "Fit_nnet.Rda")
-load(file =  "L_model.Rda")
-load(file =  "P_model.Rda")
-load(file =  "R_model.Rda")
-load(file =  "fit_bag.Rda")
-load(file = "df_final.Rda")
+
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/knn_fit.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/lasso_logreg_fit.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/Fit_naive_bayes.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/fit_cart.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/fit_rf.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/boosting_model.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/Fit_nnet.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/L_model.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/P_model.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/R_model.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/fit_bag.Rda")
+load(file =  "C:/Users/Admin/Documents/Decision_making/Models/df_Final.Rda")
 
 ```
 
